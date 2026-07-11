@@ -3,11 +3,13 @@ import os
 
 load_dotenv()
 
-TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "5673389610:AAHKwOp4u5F4H8AtgI48XZRC9QdZSgy9BuA")
+# Укажи здесь тот самый рабочий токен, который мы починили в первом сообщении!
+TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "5673389610:AAHGAMSrxHUIrJlybzoSmtWlvDMOJze_XOI")
 TG_CHAT_ID   = os.getenv("TG_CHAT_ID", "1024266193")
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from bs4 import BeautifulSoup
 from typing import Optional
@@ -31,8 +33,8 @@ INVENTORY_TIMEOUT = 12.0
 INVENTORY_WORKERS = 10
 
 # --- ГЛОБАЛЬНЫЕ ОБЪЕКТЫ В ОПЕРАТИВНОЙ ПАМЯТИ (IN-MEMORY) ---
-IN_MEMORY_CACHE = set()  # Сюда складываем все когда-либо скачанные уникальные прокси
-VALID_PROXIES = []       # Список только 100% рабочих прокси, готовых к бою
+IN_MEMORY_CACHE = set()  
+VALID_PROXIES = []       
 
 # ========================
 # ТЕЛЕГРАМ УВЕДОМЛЕНИЯ
@@ -46,21 +48,22 @@ async def send_telegram(text: str):
         logger.error(f"Ошибка отправки Telegram: {e}")
 
 # ========================
-# ЛОГИКА ВАЛИДАЦИИ И СБОРА ПРОКСИ (ПЕРЕВЕДЕНО НА ASYNC)
+# ЛОГИКА ВАЛИДАЦИИ И СБОРА ПРОКСИ
 # ========================
-async def validate_single_proxy(proxy_str: str, client: httpx.AsyncClient) -> Optional[str]:
+async def validate_single_proxy(proxy_str: str) -> Optional[str]:
     proxy_url = f"http://{proxy_str.strip()}"
     try:
-        # Быстрый асинхронный запрос через конкретный прокси
-        r = await client.get(VALIDATOR_TEST_URL, proxy=proxy_url, timeout=VALIDATOR_TIMEOUT)
-        if 200 <= r.status_code < 300:
-            return proxy_str
+        # Для httpx прокси передается строго при инициализации AsyncClient
+        async with httpx.AsyncClient(proxy=proxy_url, timeout=VALIDATOR_TIMEOUT) as client:
+            r = await client.get(VALIDATOR_TEST_URL)
+            if 200 <= r.status_code < 300:
+                return proxy_str
     except Exception:
         pass
     return None
 
 async def batch_validate_proxies():
-    """Асинхронная проверка всех прокси в памяти"""
+    """Асинхронная проверка всех прокси в памяти через Semaphore для контроля нагрузки"""
     global VALID_PROXIES
     if not IN_MEMORY_CACHE:
         logger.warning("[⚠️] Нет прокси в кэше для валидации.")
@@ -68,19 +71,20 @@ async def batch_validate_proxies():
 
     logger.info(f"[🔍] ВАЛИДАЦИЯ: Проверяю {len(IN_MEMORY_CACHE)} прокси из памяти...")
     
-    # Ограничиваем лимит одновременных соединений (аналог max_workers=500)
-    limits = httpx.Limits(max_connections=500, max_keepalive_connections=50)
+    # Ограничиваем пул до 300 одновременных задач, чтобы Railway не падал по лимитам
+    semaphore = asyncio.Semaphore(300)
     
-    async with httpx.AsyncClient(limits=limits, timeout=VALIDATOR_TIMEOUT) as client:
-        tasks = [validate_single_proxy(proxy, client) for proxy in IN_MEMORY_CACHE]
-        results = await asyncio.gather(*tasks)
-        
-        # Собираем только отработавшие
-        working = [p for p in results if p is not None]
-
+    async def worker(proxy):
+        async with semaphore:
+            return await validate_single_proxy(proxy)
+            
+    tasks = [worker(proxy) for proxy in IN_MEMORY_CACHE]
+    results = await asyncio.gather(*tasks)
+    
+    working = [p for p in results if p is not None]
     VALID_PROXIES = working
-    percent = int((len(working) / len(IN_MEMORY_CACHE) * 100) if IN_MEMORY_CACHE else 0)
     
+    percent = int((len(working) / len(IN_MEMORY_CACHE) * 100) if IN_MEMORY_CACHE else 0)
     logger.info(f"[✅] ВАЛИДАЦИЯ ЗАВЕРШЕНА. Рабочих прокси в памяти: {len(VALID_PROXIES)} ({percent}%)")
     
     if len(VALID_PROXIES) == 0:
@@ -131,34 +135,30 @@ async def load_proxies_from_site():
         logger.warning("[⚠️] С сайта не удалось получить новые прокси.")
 
 # ========================
-# ФОНОВЫЕ ТАЙМЕРЫ (BACKGROUND LOOPS)
+# ФОНОВЫЕ ТАЙМЕРЫ
 # ========================
 async def proxy_loader_cron():
-    """Каждые 30 минут качает новые прокси"""
     while True:
+        await asyncio.sleep(30 * 60)
         try:
             await load_proxies_from_site()
         except Exception as e:
-            logger.error(f"Критическая ошибка в cron загрузки: {e}")
-        await asyncio.sleep(30 * 60)
+            logger.error(f"Ошибка в cron загрузки: {e}")
 
 async def proxy_validator_cron():
-    """Каждые 5 минут валидирует базу в памяти"""
     while True:
+        await asyncio.sleep(5 * 60)
         try:
             await batch_validate_proxies()
         except Exception as e:
-            logger.error(f"Критическая ошибка в cron валидации: {e}")
-        await asyncio.sleep(5 * 60)
+            logger.error(f"Ошибка в cron валидации: {e}")
 
 @app.on_event("startup")
 async def startup_event():
-    # На старте сразу делаем первичный запуск, чтобы память заполнилась
-    logger.info("[🚀] Запуск базовой структуры микросервиса Railway...")
+    logger.info("[🚀] Запуск структуры микросервиса Railway...")
     await load_proxies_from_site()
     await batch_validate_proxies()
     
-    # Запускаем бесконечные фоновые задачи в цикле событий FastAPI
     asyncio.create_task(proxy_loader_cron())
     asyncio.create_task(proxy_validator_cron())
 
@@ -220,14 +220,23 @@ async def inventory_worker_task(steam_id: str, success_event: asyncio.Event, res
             continue
 
 # ========================
-# API ЭНДПОИНТ ДЛЯ ТВОЕГО САЙТА
+# API ЭНДПОИНТЫ
 # ========================
+
+@app.get("/")
+def read_root():
+    # Теперь главная страница возвращает статус вместо 404
+    return JSONResponse({
+        "status": "working", 
+        "cached_proxies": len(IN_MEMORY_CACHE), 
+        "active_valid_proxies": len(VALID_PROXIES)
+    })
+
 class InventoryRequest(BaseModel):
-    target: str  # Сюда можно слать хоть SteamID, хоть трейд-ссылку
+    target: str  
 
 @app.post("/api/check-inventory")
 async def check_inventory(req: InventoryRequest):
-    # Извлекаем чистый SteamID
     target = req.target.strip()
     if target.isdigit() and len(target) == 17:
         steam_id = target
@@ -241,17 +250,14 @@ async def check_inventory(req: InventoryRequest):
     success_event = asyncio.Event()
     result_container = {"status": "failed", "data": None}
     
-    # 1. Запускаем параллельный сбор аватарки/ника
     profile_task = asyncio.create_task(fetch_profile_xml(steam_id))
     
-    # 2. Штурмуем инвентарь 10 асинхронными воркерами из памяти прокси
     workers_count = INVENTORY_WORKERS if VALID_PROXIES else 1
     tasks = [inventory_worker_task(steam_id, success_event, result_container) for _ in range(workers_count)]
     
     await asyncio.gather(*tasks)
     profile_info = await profile_task
 
-    # 3. Анализируем ответы
     if result_container["status"] == "private":
         return {"status": "private", "profile": profile_info, "message": "Инвентарь закрыт настройками приватности Steam."}
         
@@ -260,7 +266,6 @@ async def check_inventory(req: InventoryRequest):
 
     raw_data = result_container["data"]
     
-    # Отдаем сырой ответ Steam + профиль. Твой server main переварит это и наложит цены!
     return {
         "status": "success",
         "steam_id": steam_id,
