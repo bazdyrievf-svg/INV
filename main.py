@@ -26,7 +26,7 @@ app = FastAPI(title="Steam Inventory & Proxy Tunnel")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # --- НАСТРОЙКИ ВАЛИДАТОРА И ПАРСЕРА ---
-ADVANCED_PROXY_URLS = ["https://advanced.name/freeproxy/6a523b381c08c"]
+ADVANCED_PROXY_URLS = ["https://advanced.name/freeproxy/6a5295f9dc695"]
 VALIDATOR_TEST_URL = "https://steamcommunity.com/?xml=1"
 VALIDATOR_TIMEOUT = 10.0
 INVENTORY_TIMEOUT = 12.0
