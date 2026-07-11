@@ -1,44 +1,38 @@
-from dotenv import load_dotenv
 import os
-
-load_dotenv()
-
-# Укажи здесь тот самый рабочий токен, который мы починили в первом сообщении!
-TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "5673389610:AAHGAMSrxHUIrJlybzoSmtWIvDMOJze_XOI")
-TG_CHAT_ID   = os.getenv("TG_CHAT_ID", "1024266193")
-
+import re
+import logging
+import asyncio
+import random
+from typing import Optional
+from dotenv import load_dotenv
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from bs4 import BeautifulSoup
-from typing import Optional
-import httpx
-import re
-import logging
-import asyncio
-import random
+
+load_dotenv()
+
+# Берем токен из переменных или используем дефолтные, если забыл прописать
+TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "5673389610:AAHGAMSrxHUIrJlybzoSmtWIvDMOJze_XOI")
+TG_CHAT_ID   = os.getenv("TG_CHAT_ID", "1024266193")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Steam Inventory & Proxy Tunnel")
+app = FastAPI(title="Steam Inventory & Proxy Worker")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# --- НАСТРОЙКИ ВАЛИДАТОРА И ПАРСЕРА ---
 ADVANCED_PROXY_URLS = ["https://advanced.name/freeproxy/6a5295f9dc695"]
 VALIDATOR_TEST_URL = "https://steamcommunity.com/?xml=1"
 VALIDATOR_TIMEOUT = 10.0
 INVENTORY_TIMEOUT = 12.0
 INVENTORY_WORKERS = 10
 
-# --- ГЛОБАЛЬНЫЕ ОБЪЕКТЫ В ОПЕРАТИВНОЙ ПАМЯТИ (IN-MEMORY) ---
 IN_MEMORY_CACHE = set()  
 VALID_PROXIES = []       
 
-# ========================
-# ТЕЛЕГРАМ УВЕДОМЛЕНИЯ
-# ========================
 async def send_telegram(text: str):
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
     try:
@@ -47,13 +41,9 @@ async def send_telegram(text: str):
     except Exception as e:
         logger.error(f"Ошибка отправки Telegram: {e}")
 
-# ========================
-# ЛОГИКА ВАЛИДАЦИИ И СБОРА ПРОКСИ
-# ========================
 async def validate_single_proxy(proxy_str: str) -> Optional[str]:
     proxy_url = f"http://{proxy_str.strip()}"
     try:
-        # Для httpx прокси передается строго при инициализации AsyncClient
         async with httpx.AsyncClient(proxy=proxy_url, timeout=VALIDATOR_TIMEOUT) as client:
             r = await client.get(VALIDATOR_TEST_URL)
             if 200 <= r.status_code < 300:
@@ -63,15 +53,12 @@ async def validate_single_proxy(proxy_str: str) -> Optional[str]:
     return None
 
 async def batch_validate_proxies():
-    """Асинхронная проверка всех прокси в памяти через Semaphore для контроля нагрузки"""
     global VALID_PROXIES
     if not IN_MEMORY_CACHE:
         logger.warning("[⚠️] Нет прокси в кэше для валидации.")
         return
 
     logger.info(f"[🔍] ВАЛИДАЦИЯ: Проверяю {len(IN_MEMORY_CACHE)} прокси из памяти...")
-    
-    # Ограничиваем пул до 300 одновременных задач, чтобы Railway не падал по лимитам
     semaphore = asyncio.Semaphore(300)
     
     async def worker(proxy):
@@ -91,7 +78,6 @@ async def batch_validate_proxies():
         await send_telegram("🚨 <b>PROXY WORKER CRITICAL</b>\n❌ Рабочих прокси в памяти: <b>0</b>")
 
 async def load_proxies_from_site():
-    """Скачивание новых прокси в оперативную память"""
     global IN_MEMORY_CACHE
     all_new = []
     
@@ -134,9 +120,6 @@ async def load_proxies_from_site():
     else:
         logger.warning("[⚠️] С сайта не удалось получить новые прокси.")
 
-# ========================
-# ФОНОВЫЕ ТАЙМЕРЫ
-# ========================
 async def proxy_loader_cron():
     while True:
         await asyncio.sleep(30 * 60)
@@ -162,9 +145,6 @@ async def startup_event():
     asyncio.create_task(proxy_loader_cron())
     asyncio.create_task(proxy_validator_cron())
 
-# ========================
-# ПАРСИНГ ПРОФИЛЯ И ИНВЕНТАРЯ RUST
-# ========================
 async def fetch_profile_xml(steam_id: str) -> dict:
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -183,6 +163,7 @@ async def fetch_profile_xml(steam_id: str) -> dict:
     return {"name": "Unknown", "avatar": ""}
 
 async def inventory_worker_task(steam_id: str, success_event: asyncio.Event, result_container: dict):
+    # Тут запрашивается Rust (252490). Если нужен CS2, поменяй 252490 на 730
     url = f"https://steamcommunity.com/inventory/{steam_id}/252490/2?l=english&count=2000"
     
     while not success_event.is_set():
@@ -219,13 +200,8 @@ async def inventory_worker_task(steam_id: str, success_event: asyncio.Event, res
         except Exception:
             continue
 
-# ========================
-# API ЭНДПОИНТЫ
-# ========================
-
 @app.get("/")
 def read_root():
-    # Теперь главная страница возвращает статус вместо 404
     return JSONResponse({
         "status": "working", 
         "cached_proxies": len(IN_MEMORY_CACHE), 
