@@ -4,7 +4,7 @@ import os
 load_dotenv()
 
 # Укажи здесь тот самый рабочий токен, который мы починили в первом сообщении!
-TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "5673389610:AAHGAMSrxHUIrJlybzoSmtWlvDMOJze_XOI")
+TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "5673389610:AAHGAMSrxHUIrJlybzoSmtWIvDMOJze_XOI")
 TG_CHAT_ID   = os.getenv("TG_CHAT_ID", "1024266193")
 
 from fastapi import FastAPI, HTTPException
