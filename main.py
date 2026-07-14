@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Steam Inventory & Proxy Worker")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-ADVANCED_PROXY_URLS = ["https://advanced.name/freeproxy/6a5295f9dc695"]
+ADVANCED_PROXY_URLS = ["https://advanced.name/freeproxy/6a56639c83a34"]
 VALIDATOR_TEST_URL = "https://steamcommunity.com/?xml=1"
 VALIDATOR_TIMEOUT = 10.0
 INVENTORY_TIMEOUT = 12.0
